@@ -1,0 +1,429 @@
+#include "cache.h"
+
+// ------------------------- DO NOT CHANGE -------------------------------- //
+#define NUM_IP_TABLE_L1_ENTRIES 1024  // IP table entries
+#define NUM_CSPT_ENTRIES 1024
+
+#define IP_TRACKER_COUNT 64           // Number of IP trackers
+#define PREFETCH_DEGREE 3           // Prefetch degree
+// ------------------------- DO NOT CHANGE -------------------------------- //
+
+#define NUM_IP_TABLE_ENTRIES 1024           // IP table entries
+#define NUM_CSPT_ENTRIES 1024
+
+
+
+
+#define PHASE_LENGTH  10000        // Choose an appropriate phase length
+
+
+uint64_t num_prefs = 0;               // To keep a track of the number of prefetched lines
+uint64_t counter_num_pref = 0;
+uint64_t check_counter = 0;
+uint64_t current_time = 0;  // Initialize current time
+
+
+
+
+
+
+// Track the accuracy of the different prefetchers
+double accuracy_ip;
+double accuracy_cplx;
+double accuracy_nl;
+
+#define IP_STRIDE 1                   // IP-Stride Prefetcher
+#define CPLX 2                        // Complex-Stride Prefetcher
+#define NL 3                          // Next-line Prefetcher
+
+uint16_t prefetcher = IP_STRIDE;      // Start with the IP-Stride Prefetcher
+
+class IP_TRACKER {
+  public:
+    uint64_t ip;             // Instruction pointer
+    uint64_t last_address;    // Last accessed address
+    int64_t stride;           // Stride between consecutive addresses
+    uint8_t confidence;       // Confidence in the detected stride pattern
+    bool valid;               // Whether this tracker entry is valid
+    uint64_t last_access_time; // Timestamp for LRU replacement
+
+    // Constructor to initialize the fields
+    IP_TRACKER() : ip(0), last_address(0), stride(0), confidence(0), valid(false), last_access_time(0) {}
+
+};
+
+IP_TRACKER trackers[IP_TRACKER_COUNT];
+
+class IP_TABLE {
+  public:
+    uint64_t ip_tag;                     
+    uint16_t ip_valid;                      // Valid IP or not   
+    uint16_t signature;                     // CPLX signature
+    uint64_t last_address;              
+
+
+ 
+    IP_TABLE () {
+        ip_tag = 0;
+        ip_valid = 0;
+        signature = 0;
+        last_address = 0;
+    };
+};
+
+
+IP_TABLE trackers_cplx[NUM_CPUS][NUM_IP_TABLE_ENTRIES];
+
+
+class CSPT_TABLE {
+
+    public:
+        uint64_t stride;
+        uint32_t confidence;
+
+        
+        
+        CSPT_TABLE() {
+
+            stride = 0;
+            confidence = 0;
+        };
+
+
+};
+CSPT_TABLE cspt[ NUM_CSPT_ENTRIES ];
+
+
+
+// ------------------------- Updating the signature ---------------------------- // 
+uint16_t update_sig_l1(uint16_t old_sig, int delta) {                           
+    
+    uint16_t new_sig = ((old_sig << 1) ^ delta);
+    return new_sig;
+}
+
+// ------------------- Updating confidence for the CPLX class ------------------ // 
+int update_conf(int stride, int pred_stride, int conf) {
+
+
+    if (stride == pred_stride) {
+        // Correct prediction, increase confidence
+        if (conf < 3) 
+        { 
+            conf++;
+        }
+    }
+    else
+    {
+        // Incorrect prediction, decrease confidence
+        if (conf > 0) 
+        { 
+            conf--;
+        }
+    }
+    return conf;
+
+}
+
+// ------------------------- Initialize the prefetcher ------------------------- // 
+void CACHE::l1d_prefetcher_initialize() 
+{
+	cout << "CPU " << cpu << " L1D Optimized prefetcher" << endl;
+    
+}
+
+// --------------- This is the main prefetcher operate function ---------------- // 
+void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint8_t critical_ip_flag    )
+{
+    check_counter++;
+
+    if( check_counter < PHASE_LENGTH)
+    {
+        prefetcher = IP_STRIDE;
+    }
+    else if( check_counter <  2*PHASE_LENGTH  )
+    {
+        prefetcher = CPLX;
+    }
+    else if( check_counter < 3*PHASE_LENGTH )
+    {
+
+        prefetcher = NL;
+
+    }
+    else
+    {
+
+            if( ( accuracy_ip > accuracy_cplx ) && ( accuracy_ip > accuracy_nl ) )
+            {
+                prefetcher = IP_STRIDE;
+            }
+            else if( ( accuracy_cplx > accuracy_ip  )  && ( accuracy_cplx > accuracy_nl ) )
+            {
+                prefetcher = CPLX;
+            }
+            else
+            {
+                prefetcher = NL;
+            }
+
+
+    }
+
+    if (warmup_complete[0] == 1) {
+
+
+        if (prefetcher == IP_STRIDE) {
+
+
+
+
+            uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;  // Get the cache line address
+            current_time++;  // Increment the current time
+
+    // Check if the IP is already tracked
+    for (int i = 0; i < IP_TRACKER_COUNT; i++) {
+
+        if (trackers[i].valid && trackers[i].ip == ip) {
+            // Compute the stride
+        
+            int64_t new_stride = cl_addr - trackers[i].last_address;
+
+            // Check if the new stride matches the previous one
+            if (new_stride == trackers[i].stride) {
+
+                if(trackers[i].confidence != 3)
+                {
+                    trackers[i].confidence++;
+                }
+                
+            } 
+            else if( trackers[i].confidence > 1 )
+            {
+
+                trackers[i].confidence--;
+                if( trackers[i].confidence == 1)
+                {
+                    trackers[i].stride = new_stride;
+                }
+            }
+            else 
+            {
+
+                trackers[i].stride = new_stride;
+
+                
+            }
+
+            // Update the last accessed address and time
+            trackers[i].last_address = cl_addr;
+            trackers[i].last_access_time = current_time;
+
+            // If confidence is high enough, issue prefetches
+            if (trackers[i].confidence >= 2) {
+
+                counter_num_pref++;
+
+                for (int j = 1; j <= PREFETCH_DEGREE; j++) {
+                    uint64_t pf_address = (cl_addr + j * trackers[i].stride) << LOG2_BLOCK_SIZE;
+                if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE))
+                    { 
+                        break;
+                    }                    
+                    prefetch_line(ip, addr, pf_address, FILL_L1, 0);
+                }
+            }
+
+            return;
+        }
+    }
+
+    // If the IP is not tracked, find an entry to replace
+    int lru_index = -1;
+    uint64_t min_time = UINT64_MAX;
+
+    // Search for an invalid entry or the least recently used (LRU) entry
+    for (int i = 0; i < IP_TRACKER_COUNT; i++) {
+        if (!trackers[i].valid) {
+            lru_index = i;
+            break;
+        }
+        if (trackers[i].last_access_time < min_time) {
+            min_time = trackers[i].last_access_time;
+            lru_index = i;
+        }
+    }
+
+    // Replace the selected entry
+    trackers[lru_index].ip = ip;
+    trackers[lru_index].last_address = cl_addr;
+    trackers[lru_index].stride = 0;  // No stride yet
+    trackers[lru_index].confidence = 0;
+    trackers[lru_index].valid = true;
+    trackers[lru_index].last_access_time = current_time;
+           
+
+
+
+
+        }
+        else if (prefetcher == CPLX) {
+
+        
+
+
+
+
+
+    uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;  // Cache line address
+
+    uint32_t ip_index = ip % NUM_IP_TABLE_ENTRIES; // Make sure it's within bounds
+
+    // Ensure 'cpu' is within bounds
+    IP_TABLE *entry = &trackers_cplx[0][ ip_index ];
+
+    if (entry->ip_valid && entry->ip_tag == ip) {
+
+    
+
+        uint64_t stride = cl_addr - entry->last_address;
+
+        
+
+        uint16_t signature = update_sig_l1(entry->signature, stride);
+
+        uint32_t sig_index = signature % NUM_CSPT_ENTRIES;
+
+        CSPT_TABLE *cspt_entry = &cspt[sig_index];
+
+        uint64_t predicted_stride = cspt_entry->stride;
+
+        // Update confidence safely
+        cspt_entry->confidence = update_conf(stride, predicted_stride, cspt_entry->confidence);
+
+        // Prefetching logic
+        if (cspt_entry->confidence > 1) {
+
+            counter_num_pref++;
+            for (int i = 1; i <= PREFETCH_DEGREE; i++) {
+                uint64_t pf_address = ( cl_addr + (predicted_stride * i ) ) << LOG2_BLOCK_SIZE;
+
+                // Ensure we do not cross page boundaries
+                if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE)) {
+                    break;
+                }
+                prefetch_line(ip, addr, pf_address, FILL_L1, 0);
+            }
+        }
+
+        // Update CSPT with new stride if confidence is low
+        if (cspt_entry->confidence == 0) {
+            cspt_entry->stride = stride;
+        }
+
+        // Update last observed values
+        entry->last_address = addr >> LOG2_BLOCK_SIZE;
+        entry->signature = signature;
+
+    } else {
+        // Initialize IP entry
+        entry->ip_tag = ip;
+        entry->last_address = addr >> LOG2_BLOCK_SIZE;
+        entry->ip_valid = 1;
+        entry->signature = 0;
+    }
+
+    return;
+
+
+
+
+
+
+           
+            
+
+
+
+        }
+        else if (prefetcher == NL) {
+            
+
+
+                        for (int i=0; i<PREFETCH_DEGREE; i++) {
+        uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;
+
+        // ----------------------- Next-line logic ------------------------ // 
+        uint64_t pf_address = (cl_addr + ((i+1))) << LOG2_BLOCK_SIZE;
+
+        // only issue a prefetch if the prefetch address is in the same 4 KB page
+        // as the current demand access address
+        if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE))
+            break;
+            
+        prefetch_line(ip, addr, pf_address, FILL_L1, 0);
+    }
+    return;
+
+
+
+
+        }
+        else {
+            assert(0);
+        }
+    }
+
+    if( check_counter == ( PHASE_LENGTH - 1 ) )
+    {
+        num_prefs = counter_num_pref;
+        counter_num_pref=0;
+        prefetcher = IP_STRIDE;
+
+
+    }
+     
+    else if( check_counter == ( 2*PHASE_LENGTH - 1 ) )
+    {
+        if( counter_num_pref > num_prefs )
+        {
+            num_prefs = counter_num_pref;
+            prefetcher = CPLX;
+
+
+        }
+        counter_num_pref = 0;
+
+    }
+
+    else if( check_counter == (3*PHASE_LENGTH - 1 ))
+    {
+        
+        if(   ( 0.6*10000 ) >  counter_num_pref )
+        {
+            prefetcher = NL;
+        }
+    }
+
+	return;
+
+}
+
+// ------------------------- DO NOT CHANGE -------------------------------- //
+void CACHE::l1d_prefetcher_notify_about_dtlb_eviction(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in)
+{
+    
+}
+
+void CACHE::l1d_prefetcher_cache_fill(uint64_t v_addr, uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t v_evicted_addr, uint64_t evicted_addr, uint32_t metadata_in)
+{
+    
+}
+
+void CACHE::l1d_prefetcher_final_stats()
+{
+	cout << "CPU " << cpu << " L1D optimized prefetcher final stats" << endl;
+	cout << "Degree: " << PREFETCH_DEGREE << endl;
+    cout<<accuracy_ip<<endl<<accuracy_cplx<<endl<<accuracy_nl<<endl;
+}
+// ------------------------- DO NOT CHANGE -------------------------------- //

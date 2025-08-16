@@ -1,0 +1,55 @@
+#include "cache.h"
+
+// ------------------------- DO NOT CHANGE -------------------------------- //
+#define IP_TRACKER_COUNT 64          // Number of IP trackers
+#define PREFETCH_DEGREE 9            // Prefetch degree
+// ------------------------- DO NOT CHANGE -------------------------------- //
+
+class IP_TRACKER {
+  public:
+    uint64_t ip;             // Instruction pointer
+    uint64_t last_address;    // Last accessed address
+    int64_t stride;           // Stride between consecutive addresses
+    uint8_t confidence;       // Confidence in the detected stride pattern
+    bool valid;               // Whether this tracker entry is valid
+    uint64_t last_access_time; // Timestamp for LRU replacement
+
+    // Constructor to initialize the fields
+    IP_TRACKER() : ip(0), last_address(0), stride(0), confidence(0), valid(false), last_access_time(0) {}
+
+};
+    
+
+IP_TRACKER trackers[IP_TRACKER_COUNT];
+
+// ------------------------- Initialize the prefetcher ------------------------- // 
+void CACHE::l1d_prefetcher_initialize() 
+{
+	cout << "CPU " << cpu << " L1D IP-based stride prefetcher" << endl;
+
+}
+
+uint64_t current_time = 0;  // Initialize current time
+
+
+// --------------- This is the main prefetcher operate function ---------------- // 
+void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint8_t critical_ip_flag)
+{
+    
+
+
+
+}
+
+// ------------------------- DO NOT CHANGE -------------------------------- //
+void CACHE::l1d_prefetcher_cache_fill(uint64_t v_addr, uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t v_evicted_addr, uint64_t evicted_addr, uint32_t metadata_in)
+{
+	return;
+}
+
+void CACHE::l1d_prefetcher_final_stats()
+{
+	cout << "CPU " << cpu << " L1D IP-based stride prefetcher final stats" << endl;
+	cout << "Degree: " << PREFETCH_DEGREE << endl;
+}
+// ------------------------- DO NOT CHANGE -------------------------------- //

@@ -1,0 +1,192 @@
+#include "cache.h"
+
+// ------------------------- DO NOT CHANGE -------------------------------- //
+#define NUM_IP_TABLE_ENTRIES 1024           // IP table entries
+#define PREFETCH_DEGREE 15                   // Prefetch degree
+#define NUM_CSPT_ENTRIES 1024
+// ------------------------- DO NOT CHANGE -------------------------------- //
+
+
+double counter = 0;
+double counter2 = 0;
+
+uint64_t checking_mode = 500;
+
+// ------------ YOU CAN CHANGE THE IP_TABLE FOR YOU DESIGN ---------------- //
+class IP_TABLE {
+  public:
+    uint64_t ip_tag;                     
+    uint16_t ip_valid;                      // Valid IP or not   
+    uint16_t signature;                     // CPLX signature
+    uint64_t last_address;              
+
+
+ 
+    IP_TABLE () {
+        ip_tag = 0;
+        ip_valid = 0;
+        signature = 0;
+        last_address = 0;
+    };
+};
+
+class CSPT_TABLE {
+
+    public:
+        uint64_t stride;
+        uint32_t confidence;
+
+        
+        
+        CSPT_TABLE() {
+
+            stride = 0;
+            confidence = 0;
+        };
+
+
+};
+
+IP_TABLE trackers_cplx[NUM_CPUS][NUM_IP_TABLE_ENTRIES];
+CSPT_TABLE cspt[ NUM_CSPT_ENTRIES ];
+
+// ------------------------- Updating the signature ---------------------------- // 
+uint16_t update_sig_l1(uint16_t old_sig, int delta) { 
+
+    // Hashing new delta (stride) into the signature using XOR and shift
+    // Only keep the SIGNATURE_BITS bits of the result
+    
+    uint16_t new_sig = ((old_sig << 1) ^ delta);
+    return new_sig;
+
+}
+
+// ------------------- Updating confidence for the CPLX class ------------------ // 
+int update_conf(int stride, int pred_stride, int conf) {
+
+    if (stride == pred_stride) {
+        // Correct prediction, increase confidence
+        if (conf < 3) 
+        { 
+            conf++;
+        }
+    }
+    else
+    {
+        // Incorrect prediction, decrease confidence
+        if (conf > 0) 
+        { 
+            conf--;
+        }
+    }
+    return conf;
+
+}
+
+// ------------------------- Initialize the prefetcher ------------------------- // 
+void CACHE::l1d_prefetcher_initialize() 
+{
+	cout << "CPU " << cpu << " L1D Complex-Stride prefetcher" << endl;
+    
+}
+
+// --------------- This is the main prefetcher operate function ---------------- // 
+void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint8_t critical_ip_flag)
+{
+
+     if( checking_mode <= 0 )
+     {
+
+        cout<<( counter )<<endl;
+        cout<< ( counter2 ) <<endl;
+        cout<<(counter2/counter)<<endl;
+     }
+     checking_mode--;
+    uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;  // Cache line address
+
+    uint32_t ip_index = ip % NUM_IP_TABLE_ENTRIES; // Make sure it's within bounds
+
+    // Ensure 'cpu' is within bounds
+    IP_TABLE *entry = &trackers_cplx[0][ ip_index ];
+
+    counter++;
+
+    if (entry->ip_valid && entry->ip_tag == ip) {
+        uint64_t stride = cl_addr - entry->last_address;
+
+        
+
+        uint16_t signature = update_sig_l1(entry->signature, stride);
+
+        uint32_t sig_index = signature % NUM_CSPT_ENTRIES;
+
+        CSPT_TABLE *cspt_entry = &cspt[sig_index];
+
+        uint64_t predicted_stride = cspt_entry->stride;
+
+        // Update confidence safely
+        cspt_entry->confidence = update_conf(stride, predicted_stride, cspt_entry->confidence);
+
+        // Prefetching logic
+        if (cspt_entry->confidence > 1) {
+            counter2++;
+
+            for (int i = 1; i <= PREFETCH_DEGREE; i++) {
+
+                  
+
+                uint64_t pf_address = ( cl_addr + (predicted_stride * i ) ) << LOG2_BLOCK_SIZE;
+
+                // Ensure we do not cross page boundaries
+                if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE)) {
+                    break;
+                }
+                              
+
+                prefetch_line(ip, addr, pf_address, FILL_L1, 0);
+            }
+        }
+
+        // Update CSPT with new stride if confidence is low
+        if (cspt_entry->confidence == 0) {
+            cspt_entry->stride = stride;
+        }
+
+        // Update last observed values
+        entry->last_address = addr >> LOG2_BLOCK_SIZE;
+        entry->signature = signature;
+
+    } else {
+        // Initialize IP entry
+        entry->ip_tag = ip;
+        entry->last_address = addr >> LOG2_BLOCK_SIZE;
+        entry->ip_valid = 1;
+        entry->signature = 0;
+    }
+
+
+
+  
+
+    return;
+
+
+}
+
+// ------------------------- DO NOT CHANGE -------------------------------- //
+void CACHE::l1d_prefetcher_notify_about_dtlb_eviction(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in)
+{
+
+}
+
+void CACHE::l1d_prefetcher_cache_fill(uint64_t v_addr, uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t v_evicted_addr, uint64_t evicted_addr, uint32_t metadata_in)
+{
+
+}
+
+void CACHE::l1d_prefetcher_final_stats()
+{
+	cout << "CPU " << cpu << " L1D complex stride prefetcher final stats" << endl;
+	cout << "Degree: " << PREFETCH_DEGREE << endl;
+}
+// ------------------------- DO NOT CHANGE -------------------------------- //

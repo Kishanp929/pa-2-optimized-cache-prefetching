@@ -1,0 +1,182 @@
+#include "cache.h"
+
+// ------------------------- DO NOT CHANGE -------------------------------- //
+#define IP_TRACKER_COUNT 64                 // Number of IP trackers
+// ------------------------- DO NOT CHANGE -------------------------------- //
+
+#define PREFETCH_DEGREE 3           // Prefetch degree - you need to vary this!
+
+
+
+class IP_TRACKER {
+  public:
+    // ------------------------- Define the IP_TRACKER class here ------------------------- //
+    uint64_t ip;                    // Program Counter (PC)
+    uint64_t last_address;           // Last referenced address by this IP
+    int64_t stride;                  // Stride value (difference between consecutive addresses)
+    uint64_t state;            // State tracking the stability of the stride
+    uint64_t lru;              
+
+    IP_TRACKER() : ip(0), last_address(0), stride(0), state(0), lru(1) {}  //
+
+};
+
+IP_TRACKER trackers[IP_TRACKER_COUNT];
+
+// ------------------------- Initialize the prefetcher ------------------------- // 
+void CACHE::stlb_prefetcher_initialize() 
+{
+	cout << "CPU " << cpu << " STLB arbitrary stride prefetcher" << endl;
+
+        for (int i = 0; i < IP_TRACKER_COUNT; i++) 
+        {
+
+        trackers[i] = IP_TRACKER(); // initializing all the IP_Trackers 
+
+        }
+
+}
+
+// ----------------------------------------------------- update_mru -------------------
+void update_lru_when_hit(IP_TRACKER* tracker) {
+    // Increment the MRU of all trackers (higher value = less recently used)
+    for (int i = 0; i < IP_TRACKER_COUNT; i++)  {
+
+        if( tracker->lru < trackers[i].lru  )
+        {
+            trackers[i].lru--;
+        }
+
+    }
+
+    tracker->lru = 64;
+
+}
+
+
+// --------------- This is the main prefetcher operate function ---------------- // 
+void CACHE::stlb_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction)
+{
+
+
+
+    // ------------------------ Add Arbitrary Stride pf_address logic here ----------------------- // 
+    IP_TRACKER *tracker = nullptr;
+    bool is_hit = false;
+    bool is_full = true;
+
+    for( int  i = 0; i < IP_TRACKER_COUNT; i++) 
+    {
+
+        if (  trackers[i].ip == ip  ) 
+        {
+
+            is_hit = true;
+
+
+            tracker = &trackers[i];
+            int64_t new_stride = ( addr >> 12 )  - ( tracker->last_address >> 12);
+
+
+
+    if( tracker->state == 0 )
+    {
+        
+            tracker->stride = new_stride;
+            tracker->state = 1;
+
+    }
+    else if( tracker->state >= 1 )
+    {
+        if(tracker->stride == new_stride)
+        {
+            tracker->state = 2;
+
+            for( int i = 1 ; i <= PREFETCH_DEGREE ; i++ )
+            {
+                uint64_t pf_address =   ( (addr>>12) + i*tracker->stride ) << 12;
+                prefetch_translation(ip, pf_address, (int)2, 0, prefetch_id, instruction);
+
+            }
+
+        }
+        else
+        {
+            tracker->stride = new_stride;
+            tracker->state = 1;
+        }
+
+    }
+ 
+        tracker->last_address = addr;
+
+        
+
+       
+        update_lru_when_hit(tracker);
+        
+        return;
+
+        }
+
+        
+        if( trackers[i].ip == 0 )
+        {
+            is_full = false;
+        }
+    
+    }
+
+
+  
+    if( is_full && !(is_hit) )
+    {
+
+        for(int i = 0 ; i < 64 ; i++ )
+        {
+            if( trackers[i].lru == 1 )
+            {
+                trackers[i].ip = ip;
+                trackers[i].last_address = addr;
+                trackers[i].stride = 0;
+                trackers[i].state = 0; // initial state
+                return;
+
+            }
+        }
+
+    }
+        
+    for(int i = 0 ; i < 64 ; i++ )
+    {
+        
+        if(trackers[i].ip == 0 )
+        {
+            trackers[i].ip = ip;
+            trackers[i].last_address = addr;
+            return;
+        }
+        else if( trackers[i].lru > 0)
+        {
+            trackers[i].lru++;
+        }
+
+    }
+   
+
+
+
+}
+
+// ------------------------- DO NOT CHANGE -------------------------------- //
+void CACHE::stlb_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in)
+{
+    return;
+}
+
+void CACHE::stlb_prefetcher_final_stats()
+{
+    cout << "CPU " << cpu << " STLB arbitrary stride prefetcher final stats" << endl;
+	cout << "Degree: " << PREFETCH_DEGREE << endl;
+}
+// ------------------------- DO NOT CHANGE -------------------------------- //
